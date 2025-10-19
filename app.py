@@ -540,62 +540,47 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         regatta = st.text_input("Regata *", key="collector_regatta_text")
         st.session_state.pop("collector_regatta_select", None)
 
+    # --- classes disponíveis para a regata selecionada ---
     classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
-    class_lookup: dict[str, str] = {}
-    if classes_for_regatta:
-        for value in classes_for_regatta:
-            cleaned_value = value.strip()
-            if not cleaned_value:
-                continue
-            normalized = cleaned_value.casefold()
-            class_lookup.setdefault(normalized, value)
 
+    # normaliza lookup para preservar capitalização original no resultado
+    class_lookup: dict[str, str] = {}
+    for value in classes_for_regatta:
+        cleaned = str(value).strip()
+        if cleaned:
+            class_lookup.setdefault(cleaned.casefold(), cleaned)
+
+    # widget da classe:
     sail_class = ""
     class_key = "collector_class_select"
     regatta_state_key = "collector_selected_regatta"
     class_placeholder = "Selecione a classe"
+
     if classes_for_regatta:
-        previous_regatta = st.session_state.get(regatta_state_key)
-        if regatta != previous_regatta:
+        # se trocar a regata, reseta apenas o select da classe
+        if st.session_state.get(regatta_state_key) != regatta:
             st.session_state.pop(class_key, None)
+
         selected_option = st.selectbox(
             "Classe *",
             [class_placeholder] + classes_for_regatta,
             key=class_key,
         )
-        if selected_option == class_placeholder:
-            sail_class = ""
-        else:
-            selected_clean = selected_option.strip()
-            normalized = selected_clean.casefold()
-            sail_class = class_lookup.get(normalized, selected_clean)
+        if selected_option != class_placeholder:
+            sail_class = class_lookup.get(
+                selected_option.strip().casefold(), selected_option.strip()
+            )
+
         st.session_state[regatta_state_key] = regatta
-        st.session_state.pop("collector_class_text", None)
-    elif regatta or not regatta_names:
-        sail_class = st.text_input("Classe", key="collector_class_text").strip()
-        st.session_state.pop(class_key, None)
-        st.session_state.pop(regatta_state_key, None)
     else:
-        st.session_state.pop(class_key, None)
-        st.session_state.pop("collector_class_text", None)
-        st.session_state.pop(regatta_state_key, None)
+        # sem regatas pré-configuradas ou regata sem classes: campo texto livre
+        sail_class = st.text_input("Classe").strip()
 
+    # botão do form fica desabilitado somente quando precisa
     submit_disabled = (not regatta.strip()) or (
-        classes_for_regatta and not sail_class.strip()
+        bool(classes_for_regatta) and not sail_class.strip()
     )
 
-    submit_disabled = (not regatta.strip()) or (
-        classes_for_regatta and not sail_class.strip()
-    )
-
-    submit_disabled = (not regatta.strip()) or (
-        classes_for_regatta and not sail_class.strip()
-    )
-
-    submit_disabled = (not regatta.strip()) or (classes_for_regatta and not sail_class)
-
-    classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
-    sail_class = ""
     with st.form("collector_form"):
         regatta_date = st.date_input("Data da regata *", value=date.today())
         athlete_name = st.text_input("Nome do atleta *")
