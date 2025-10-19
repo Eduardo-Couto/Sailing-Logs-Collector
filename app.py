@@ -659,16 +659,13 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             ],
         }
 
-        for state_key in [
-            "collector_regatta_select",
-            "collector_class_select",
-            "collector_selected_regatta",
-            "collector_regatta_date",
-            "collector_athlete_name",
-            "collector_contact",
-            "collector_uploaded_files",
-        ]:
-            st.session_state.pop(state_key, None)
+        st.session_state["collector_regatta_select"] = placeholder
+        st.session_state["collector_class_select"] = class_placeholder
+        st.session_state["collector_selected_regatta"] = ""
+        st.session_state["collector_regatta_date"] = date.today()
+        st.session_state["collector_athlete_name"] = ""
+        st.session_state["collector_contact"] = ""
+        st.session_state["collector_uploaded_files"] = []
 
         trigger_rerun()
 
