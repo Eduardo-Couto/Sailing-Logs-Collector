@@ -541,6 +541,14 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         st.session_state.pop("collector_regatta_select", None)
 
     classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
+    class_lookup: dict[str, str] = {}
+    if classes_for_regatta:
+        for value in classes_for_regatta:
+            cleaned_value = value.strip()
+            if not cleaned_value:
+                continue
+            normalized = cleaned_value.casefold()
+            class_lookup.setdefault(normalized, value)
 
     sail_class = ""
     class_key = "collector_class_select"
@@ -555,10 +563,12 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             [class_placeholder] + classes_for_regatta,
             key=class_key,
         )
-        if selected_option == class_placeholder or selected_option not in classes_for_regatta:
+        if selected_option == class_placeholder:
             sail_class = ""
         else:
-            sail_class = selected_option
+            selected_clean = selected_option.strip()
+            normalized = selected_clean.casefold()
+            sail_class = class_lookup.get(normalized, selected_clean)
         st.session_state[regatta_state_key] = regatta
         st.session_state.pop("collector_class_text", None)
     elif regatta or not regatta_names:
@@ -569,6 +579,10 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         st.session_state.pop(class_key, None)
         st.session_state.pop("collector_class_text", None)
         st.session_state.pop(regatta_state_key, None)
+
+    submit_disabled = (not regatta.strip()) or (
+        classes_for_regatta and not sail_class.strip()
+    )
 
     submit_disabled = (not regatta.strip()) or (
         classes_for_regatta and not sail_class.strip()
