@@ -584,6 +584,18 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         classes_for_regatta and not sail_class.strip()
     )
 
+    submit_disabled = (not regatta.strip()) or (
+        classes_for_regatta and not sail_class.strip()
+    )
+
+    submit_disabled = (not regatta.strip()) or (
+        classes_for_regatta and not sail_class.strip()
+    )
+
+    submit_disabled = (not regatta.strip()) or (classes_for_regatta and not sail_class)
+
+    classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
+    sail_class = ""
     with st.form("collector_form"):
         regatta_date = st.date_input("Data da regata *", value=date.today())
         athlete_name = st.text_input("Nome do atleta *")
