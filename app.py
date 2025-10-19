@@ -542,6 +542,18 @@ def collector_tab(master_df: pd.DataFrame) -> None:
 
         st.session_state.pop("collector_form_feedback", None)
 
+    if st.session_state.pop("collector_reset_form", False):
+        for key in (
+            "collector_regatta_select",
+            "collector_class_select",
+            "collector_selected_regatta",
+            "collector_regatta_date",
+            "collector_athlete_name",
+            "collector_contact",
+            "collector_uploaded_files",
+        ):
+            st.session_state.pop(key, None)
+
     regatta_config = load_regatta_config()
 
     regatta = ""
@@ -659,15 +671,9 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             ],
         }
 
-        st.session_state["collector_regatta_select"] = placeholder
-        st.session_state["collector_class_select"] = class_placeholder
-        st.session_state["collector_selected_regatta"] = ""
-        st.session_state["collector_regatta_date"] = date.today()
-        st.session_state["collector_athlete_name"] = ""
-        st.session_state["collector_contact"] = ""
-        st.session_state["collector_uploaded_files"] = []
-
+        st.session_state["collector_reset_form"] = True
         trigger_rerun()
+        return
 
 
 def admin_tab() -> None:
