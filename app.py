@@ -523,6 +523,37 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         "Envie seus arquivos de rastreamento para que possamos organizar o inventário da regata."
     )
 
+    feedback = st.session_state.get("collector_form_feedback")
+    if feedback:
+        success_entries = feedback.get("success", [])
+        duplicate_entries = feedback.get("duplicates", [])
+
+        if success_entries:
+            st.success("Uploads concluídos!")
+            for entry in success_entries:
+                st.write(
+                    f"• **{entry['filename']}** – protocolo `{entry['file_hash'][:8]}` – data {entry['log_date']}"
+                )
+
+        if duplicate_entries:
+            st.warning("Alguns arquivos foram ignorados por já existirem no inventário:")
+            for entry in duplicate_entries:
+                st.write(f"• {entry['filename']} – hash `{entry['file_hash'][:8]}`")
+
+        st.session_state.pop("collector_form_feedback", None)
+
+    if st.session_state.pop("collector_reset_form", False):
+        for key in (
+            "collector_regatta_select",
+            "collector_class_select",
+            "collector_selected_regatta",
+            "collector_regatta_date",
+            "collector_athlete_name",
+            "collector_contact",
+            "collector_uploaded_files",
+        ):
+            st.session_state.pop(key, None)
+
     regatta_config = load_regatta_config()
 
     regatta = ""
@@ -579,14 +610,19 @@ def collector_tab(master_df: pd.DataFrame) -> None:
     submit_disabled = (not regatta.strip()) or (not sail_class.strip())
 
     with st.form("collector_form"):
-        regatta_date = st.date_input("Data da regata *", value=date.today())
-        athlete_name = st.text_input("Nome do atleta *")
-        contact = st.text_input("Contato (e-mail ou telefone) *")
+        regatta_date = st.date_input(
+            "Data da regata *", value=date.today(), key="collector_regatta_date"
+        )
+        athlete_name = st.text_input("Nome do atleta *", key="collector_athlete_name")
+        contact = st.text_input(
+            "Contato (e-mail ou telefone) *", key="collector_contact"
+        )
         uploaded_files = st.file_uploader(
             "Arquivos de log *",
             accept_multiple_files=True,
             type=ACCEPTED_EXTENSIONS,
             help="Formatos aceitos: GPX, CSV, FIT, TCX, NMEA ou ZIP.",
+            key="collector_uploaded_files",
         )
         submitted = st.form_submit_button("Enviar logs", disabled=submit_disabled)
 
@@ -620,19 +656,24 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         success = [result for result in results if result.success]
         duplicates = [result for result in results if not result.success]
 
-        if success:
-            st.success("Uploads concluídos!")
-            for result in success:
-                st.write(
-                    f"• **{result.filename}** – protocolo `{result.file_hash[:8]}` – data {result.log_date.isoformat()}"
-                )
+        st.session_state["collector_form_feedback"] = {
+            "success": [
+                {
+                    "filename": result.filename,
+                    "file_hash": result.file_hash,
+                    "log_date": result.log_date.isoformat(),
+                }
+                for result in success
+            ],
+            "duplicates": [
+                {"filename": result.filename, "file_hash": result.file_hash}
+                for result in duplicates
+            ],
+        }
 
-        if duplicates:
-            st.warning("Alguns arquivos foram ignorados por já existirem no inventário:")
-            for result in duplicates:
-                st.write(
-                    f"• {result.filename} – hash `{result.file_hash[:8]}`"
-                )
+        st.session_state["collector_reset_form"] = True
+        trigger_rerun()
+        return
 
 
 def admin_tab() -> None:
