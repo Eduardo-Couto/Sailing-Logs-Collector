@@ -1,0 +1,21 @@
+# Ignorar ambiente virtual
+.venv/
+
+# Ignorar caches e temporários
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+.DS_Store
+
+# Ignorar configurações locais
+.env
+.env.*
+.vscode/
+.idea/
+
+# Ignorar arquivos gerados
+*.zip
+*.csv
+*.xlsx
