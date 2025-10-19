@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import re
 import unicodedata
@@ -30,6 +31,7 @@ DEFAULT_STORAGE_ROOT = Path("storage").resolve()
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", DEFAULT_STORAGE_ROOT)).resolve()
 MASTER_CSV_NAME = os.getenv("MASTER_CSV_NAME", "master.csv")
 INDEX_CSV_NAME = os.getenv("INDEX_CSV_NAME", "index.csv")
+REGATTA_CONFIG_NAME = os.getenv("REGATTA_CONFIG_NAME", "regattas.json")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", os.getenv("ADMIN_PASS", "admin"))
 TIMEZONE_NAME = os.getenv("TIMEZONE", "UTC")
 
@@ -43,6 +45,9 @@ else:
 
 ACCEPTED_EXTENSIONS = ["gpx", "csv", "fit", "tcx", "nmea", "zip"]
 
+REGATTA_CONFIG_PATH = STORAGE_ROOT / REGATTA_CONFIG_NAME
+
+
 INVENTORY_COLUMNS = [
     "received_at_utc",
     "log_date",
@@ -52,7 +57,6 @@ INVENTORY_COLUMNS = [
     "regatta_date",
     "athlete_name",
     "class",
-    "sail_number",
     "contact",
     "source_channel",
     "raw_filename",
@@ -70,6 +74,53 @@ def ensure_storage_root() -> None:
     """Create the storage root if it does not exist."""
 
     STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def load_regatta_config() -> dict[str, list[str]]:
+    """Load regatta options defined by administrators."""
+
+    if not REGATTA_CONFIG_PATH.exists():
+        return {}
+
+    try:
+        with REGATTA_CONFIG_PATH.open("r", encoding="utf-8") as stream:
+            data = json.load(stream)
+    except Exception as exc:  # pragma: no cover - defensive UI feedback
+        st.error(f"Não foi possível ler as configurações de regata: {exc}")
+        return {}
+
+    regattas = data.get("regattas", []) if isinstance(data, dict) else []
+    mapping: dict[str, list[str]] = {}
+    for entry in regattas:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not name:
+            continue
+        classes = entry.get("classes", [])
+        if not isinstance(classes, list):
+            classes = []
+        cleaned = []
+        for value in classes:
+            value_str = str(value).strip()
+            if value_str:
+                cleaned.append(value_str)
+        mapping[str(name)] = cleaned
+    return mapping
+
+
+def save_regatta_config(mapping: dict[str, list[str]]) -> None:
+    """Persist the regatta options for collector dropdowns."""
+
+    REGATTA_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "regattas": [
+            {"name": name, "classes": classes}
+            for name, classes in sorted(mapping.items(), key=lambda item: item[0].lower())
+        ]
+    }
+    with REGATTA_CONFIG_PATH.open("w", encoding="utf-8") as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +413,6 @@ def process_uploads(
     regatta_date: date,
     athlete_name: str,
     sail_class: str,
-    sail_number: str,
     contact: str,
     files: Iterable[st.runtime.uploaded_file_manager.UploadedFile],
     master_df: pd.DataFrame,
@@ -418,7 +468,6 @@ def process_uploads(
             "regatta_date": regatta_date.isoformat() if regatta_date else "",
             "athlete_name": athlete_name,
             "class": sail_class,
-            "sail_number": sail_number,
             "contact": contact,
             "source_channel": "web",
             "raw_filename": raw_name,
@@ -458,12 +507,31 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         "Envie seus arquivos de rastreamento para que possamos organizar o inventário da regata."
     )
 
+    regatta_config = load_regatta_config()
+
+    regatta = ""
+    regatta_names = sorted(regatta_config)
+    if regatta_names:
+        placeholder = "Selecione uma regata"
+        regatta_option = st.selectbox(
+            "Regata *",
+            [placeholder] + regatta_names,
+            key="collector_regatta_select",
+        )
+        regatta = "" if regatta_option == placeholder else regatta_option
+
     with st.form("collector_form"):
-        regatta = st.text_input("Regata *")
+        if not regatta_names:
+            regatta = st.text_input("Regata *")
         regatta_date = st.date_input("Data da regata *", value=date.today())
         athlete_name = st.text_input("Nome do atleta *")
-        sail_class = st.text_input("Classe")
-        sail_number = st.text_input("Número da vela")
+        classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
+        if classes_for_regatta:
+            class_placeholder = "Selecione a classe"
+            class_option = st.selectbox("Classe", [class_placeholder] + classes_for_regatta)
+            sail_class = "" if class_option == class_placeholder else class_option
+        else:
+            sail_class = st.text_input("Classe")
         contact = st.text_input("Contato (e-mail ou telefone) *")
         uploaded_files = st.file_uploader(
             "Arquivos de log *",
@@ -480,6 +548,9 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         if not athlete_name.strip():
             st.error("Informe o nome do atleta.")
             return
+        if classes_for_regatta and not sail_class:
+            st.error("Selecione uma classe disponível para a regata escolhida.")
+            return
         if not contact.strip():
             st.error("Informe um contato para confirmação.")
             return
@@ -492,7 +563,6 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             regatta_date=regatta_date,
             athlete_name=athlete_name,
             sail_class=sail_class,
-            sail_number=sail_number,
             contact=contact,
             files=uploaded_files,
             master_df=master_df,
@@ -533,6 +603,99 @@ def admin_tab() -> None:
             else:
                 st.error("Senha incorreta.")
         return
+
+    regatta_config = load_regatta_config()
+
+    st.markdown("### Configuração do coletor")
+    with st.expander(
+        "Regatas e classes disponíveis no coletor",
+        expanded=not regatta_config,
+    ):
+        if not regatta_config:
+            st.info("Nenhuma regata configurada. Adicione uma nova regata abaixo.")
+
+        regatta_names = sorted(regatta_config)
+        selector_options = ["(Nova regata)"] + regatta_names
+        selected_option = st.selectbox(
+            "Selecione uma regata para configurar",
+            selector_options,
+            key="admin_regatta_selector",
+        )
+        is_new = selected_option == "(Nova regata)"
+        widget_suffix = slugify(selected_option or "nova-regata")
+        if is_new:
+            widget_suffix = f"new-{widget_suffix}"
+        default_name = "" if is_new else selected_option
+        default_classes = (
+            ", ".join(regatta_config.get(selected_option, [])) if not is_new else ""
+        )
+
+        delete_clicked = False
+        with st.form(f"regatta_form_{widget_suffix}"):
+            regatta_name = st.text_input(
+                "Nome da regata",
+                value=default_name,
+                key=f"regatta_name_{widget_suffix}",
+            )
+            classes_value = st.text_input(
+                "Classes disponíveis (separe por vírgula)",
+                value=default_classes,
+                help="Ex.: HPE30, HPE25",
+                key=f"regatta_classes_{widget_suffix}",
+            )
+            submitted_config = st.form_submit_button("Salvar regata")
+            if not is_new:
+                delete_clicked = st.form_submit_button("Remover regata")
+
+        if delete_clicked and not is_new:
+            if selected_option in regatta_config:
+                regatta_config.pop(selected_option)
+                save_regatta_config(regatta_config)
+                st.success("Regata removida do coletor.")
+                trigger_rerun()
+                return
+
+        if submitted_config:
+            regatta_name_clean = regatta_name.strip()
+            if not regatta_name_clean:
+                st.error("Informe o nome da regata.")
+            else:
+                classes = []
+                for part in classes_value.split(","):
+                    value = part.strip()
+                    if value and value not in classes:
+                        classes.append(value)
+
+                if is_new:
+                    if regatta_name_clean in regatta_config:
+                        st.error("Já existe uma regata com esse nome.")
+                    else:
+                        regatta_config[regatta_name_clean] = classes
+                        save_regatta_config(regatta_config)
+                        st.success("Regata adicionada ao coletor.")
+                        trigger_rerun()
+                        return
+                else:
+                    original_name = selected_option
+                    if (
+                        regatta_name_clean != original_name
+                        and regatta_name_clean in regatta_config
+                    ):
+                        st.error("Já existe uma regata com esse nome.")
+                    else:
+                        if regatta_name_clean != original_name:
+                            regatta_config.pop(original_name, None)
+                        regatta_config[regatta_name_clean] = classes
+                        save_regatta_config(regatta_config)
+                        st.success("Regata atualizada no coletor.")
+                        trigger_rerun()
+                        return
+
+        if regatta_config:
+            st.caption(
+                "Regatas configuradas: "
+                + ", ".join(name for name in sorted(regatta_config))
+            )
 
     st.info("Use o seletor abaixo para visualizar as regatas disponíveis.")
 
