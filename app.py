@@ -527,18 +527,13 @@ def collector_tab(master_df: pd.DataFrame) -> None:
 
     regatta = ""
     regatta_names = sorted(regatta_config)
-    if regatta_names:
-        placeholder = "Selecione uma regata"
-        regatta_option = st.selectbox(
-            "Regata *",
-            [placeholder] + regatta_names,
-            key="collector_regatta_select",
-        )
-        regatta = "" if regatta_option == placeholder else regatta_option
-        st.session_state.pop("collector_regatta_text", None)
-    else:
-        regatta = st.text_input("Regata *", key="collector_regatta_text")
-        st.session_state.pop("collector_regatta_select", None)
+    placeholder = "Selecione uma regata"
+    regatta_option = st.selectbox(
+        "Regata *",
+        [placeholder] + regatta_names if regatta_names else [placeholder],
+        key="collector_regatta_select",
+    )
+    regatta = "" if regatta_option == placeholder else regatta_option
 
     # --- classes disponíveis para a regata selecionada ---
     classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
@@ -556,11 +551,11 @@ def collector_tab(master_df: pd.DataFrame) -> None:
     regatta_state_key = "collector_selected_regatta"
     class_placeholder = "Selecione a classe"
 
-    if classes_for_regatta:
-        # se trocar a regata, reseta apenas o select da classe
-        if st.session_state.get(regatta_state_key) != regatta:
-            st.session_state.pop(class_key, None)
+    previous_regatta = st.session_state.get(regatta_state_key)
+    if previous_regatta != regatta:
+        st.session_state.pop(class_key, None)
 
+    if classes_for_regatta:
         selected_option = st.selectbox(
             "Classe *",
             [class_placeholder] + classes_for_regatta,
@@ -570,16 +565,18 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             sail_class = class_lookup.get(
                 selected_option.strip().casefold(), selected_option.strip()
             )
-
-        st.session_state[regatta_state_key] = regatta
     else:
-        # sem regatas pré-configuradas ou regata sem classes: campo texto livre
-        sail_class = st.text_input("Classe").strip()
+        st.selectbox(
+            "Classe *",
+            [class_placeholder],
+            key=class_key,
+            disabled=True,
+        )
+
+    st.session_state[regatta_state_key] = regatta
 
     # botão do form fica desabilitado somente quando precisa
-    submit_disabled = (not regatta.strip()) or (
-        bool(classes_for_regatta) and not sail_class.strip()
-    )
+    submit_disabled = (not regatta.strip()) or (not sail_class.strip())
 
     with st.form("collector_form"):
         regatta_date = st.date_input("Data da regata *", value=date.today())
@@ -600,7 +597,7 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         if not athlete_name.strip():
             st.error("Informe o nome do atleta.")
             return
-        if classes_for_regatta and not sail_class.strip():
+        if not sail_class.strip():
             st.error("Selecione uma classe disponível para a regata escolhida.")
             return
         if not contact.strip():
