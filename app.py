@@ -509,13 +509,19 @@ def collector_tab(master_df: pd.DataFrame) -> None:
 
     regatta_config = load_regatta_config()
 
+    regatta = ""
+    regatta_names = sorted(regatta_config)
+    if regatta_names:
+        placeholder = "Selecione uma regata"
+        regatta_option = st.selectbox(
+            "Regata *",
+            [placeholder] + regatta_names,
+            key="collector_regatta_select",
+        )
+        regatta = "" if regatta_option == placeholder else regatta_option
+
     with st.form("collector_form"):
-        regatta_names = sorted(regatta_config)
-        if regatta_names:
-            placeholder = "Selecione uma regata"
-            regatta_option = st.selectbox("Regata *", [placeholder] + regatta_names)
-            regatta = "" if regatta_option == placeholder else regatta_option
-        else:
+        if not regatta_names:
             regatta = st.text_input("Regata *")
         regatta_date = st.date_input("Data da regata *", value=date.today())
         athlete_name = st.text_input("Nome do atleta *")
@@ -541,6 +547,9 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             return
         if not athlete_name.strip():
             st.error("Informe o nome do atleta.")
+            return
+        if classes_for_regatta and not sail_class:
+            st.error("Selecione uma classe disponível para a regata escolhida.")
             return
         if not contact.strip():
             st.error("Informe um contato para confirmação.")
