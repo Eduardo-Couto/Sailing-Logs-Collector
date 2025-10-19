@@ -164,6 +164,16 @@ def compute_sha256(data: bytes) -> str:
     return digest.hexdigest()
 
 
+def trigger_rerun() -> None:
+    """Trigger a Streamlit rerun supporting both legacy and current APIs."""
+
+    rerun = getattr(st, "experimental_rerun", None)
+    if rerun is not None:
+        rerun()
+    else:  # pragma: no cover - depends on Streamlit runtime
+        st.rerun()
+
+
 def parse_gpx_datetime(data: bytes) -> Optional[datetime]:
     """Extract the first ``<time>`` entry from a GPX file."""
 
@@ -325,7 +335,7 @@ def render_inventory(df_view: pd.DataFrame, index_csv_path: Path) -> None:
                     remove_row_csv(index_csv_path, predicate)
 
                     st.success("Arquivo excluído e inventário atualizado.")
-                    st.experimental_rerun()
+                    trigger_rerun()
                 except Exception as exc:  # pragma: no cover - defensive UI
                     st.error(f"Falha ao excluir: {exc}")
 
@@ -519,7 +529,7 @@ def admin_tab() -> None:
         if submitted:
             if password == ADMIN_PASSWORD:
                 st.session_state["admin_authenticated"] = True
-                st.experimental_rerun()
+                trigger_rerun()
             else:
                 st.error("Senha incorreta.")
         return
@@ -536,7 +546,7 @@ def admin_tab() -> None:
         st.warning("Nenhuma regata encontrada no armazenamento.")
         if st.button("Sair"):
             st.session_state["admin_authenticated"] = False
-            st.experimental_rerun()
+            trigger_rerun()
         return
 
     regatta_dirs.sort(key=lambda p: p.name)
@@ -584,7 +594,7 @@ def admin_tab() -> None:
 
     if st.button("Sair"):
         st.session_state["admin_authenticated"] = False
-        st.experimental_rerun()
+        trigger_rerun()
 
 
 def main() -> None:
