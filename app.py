@@ -295,7 +295,23 @@ def build_zip(rows: pd.DataFrame) -> Optional[bytes]:
             file_path = resolve_path(str(drive_path))
             if not file_path.exists():
                 continue
-            arcname = Path(drive_path).as_posix()
+
+            storage_parts = Path(drive_path).parts
+            regatta_folder = storage_parts[0] if storage_parts else slugify(row.get("regatta", "regata"))
+
+            log_date_value = row.get("log_date", "")
+            if pd.isna(log_date_value):
+                log_date = ""
+            else:
+                log_date = str(log_date_value).strip()
+            filename = str(row.get("canonical_filename") or Path(drive_path).name)
+
+            arc_parts = [regatta_folder]
+            if log_date:
+                arc_parts.append(log_date)
+            arc_parts.append(filename)
+
+            arcname = "/".join(arc_parts)
             archive.write(file_path, arcname=arcname)
             files_added = True
 
