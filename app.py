@@ -545,27 +545,35 @@ def collector_tab(master_df: pd.DataFrame) -> None:
     sail_class = ""
     class_key = "collector_class_select"
     regatta_state_key = "collector_selected_regatta"
+    class_placeholder = "Selecione a classe"
     if classes_for_regatta:
         previous_regatta = st.session_state.get(regatta_state_key)
         if regatta != previous_regatta:
             st.session_state.pop(class_key, None)
-        class_placeholder = "Selecione a classe"
-        class_option = st.selectbox(
+        st.selectbox(
             "Classe *",
             [class_placeholder] + classes_for_regatta,
             key=class_key,
         )
-        sail_class = "" if class_option == class_placeholder else class_option
+        selected_option = st.session_state.get(class_key, "")
+        if selected_option == class_placeholder or selected_option not in classes_for_regatta:
+            sail_class = ""
+        else:
+            sail_class = selected_option
         st.session_state[regatta_state_key] = regatta
         st.session_state.pop("collector_class_text", None)
     elif regatta or not regatta_names:
-        sail_class = st.text_input("Classe", key="collector_class_text")
+        sail_class = st.text_input("Classe", key="collector_class_text").strip()
         st.session_state.pop(class_key, None)
         st.session_state.pop(regatta_state_key, None)
     else:
         st.session_state.pop(class_key, None)
         st.session_state.pop("collector_class_text", None)
         st.session_state.pop(regatta_state_key, None)
+
+    submit_disabled = (not regatta.strip()) or (
+        classes_for_regatta and not sail_class.strip()
+    )
 
     submit_disabled = (not regatta.strip()) or (classes_for_regatta and not sail_class)
 
@@ -590,7 +598,7 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         if not athlete_name.strip():
             st.error("Informe o nome do atleta.")
             return
-        if classes_for_regatta and not sail_class:
+        if classes_for_regatta and not sail_class.strip():
             st.error("Selecione uma classe disponível para a regata escolhida.")
             return
         if not contact.strip():
