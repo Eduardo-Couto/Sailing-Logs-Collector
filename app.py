@@ -535,19 +535,43 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             key="collector_regatta_select",
         )
         regatta = "" if regatta_option == placeholder else regatta_option
+        st.session_state.pop("collector_regatta_text", None)
+    else:
+        regatta = st.text_input("Regata *", key="collector_regatta_text")
+        st.session_state.pop("collector_regatta_select", None)
+
+    classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
+
+    sail_class = ""
+    class_key = "collector_class_select"
+    regatta_state_key = "collector_selected_regatta"
+    if classes_for_regatta:
+        previous_regatta = st.session_state.get(regatta_state_key)
+        if regatta != previous_regatta:
+            st.session_state.pop(class_key, None)
+        class_placeholder = "Selecione a classe"
+        class_option = st.selectbox(
+            "Classe *",
+            [class_placeholder] + classes_for_regatta,
+            key=class_key,
+        )
+        sail_class = "" if class_option == class_placeholder else class_option
+        st.session_state[regatta_state_key] = regatta
+        st.session_state.pop("collector_class_text", None)
+    elif regatta or not regatta_names:
+        sail_class = st.text_input("Classe", key="collector_class_text")
+        st.session_state.pop(class_key, None)
+        st.session_state.pop(regatta_state_key, None)
+    else:
+        st.session_state.pop(class_key, None)
+        st.session_state.pop("collector_class_text", None)
+        st.session_state.pop(regatta_state_key, None)
+
+    submit_disabled = (not regatta.strip()) or (classes_for_regatta and not sail_class)
 
     with st.form("collector_form"):
-        if not regatta_names:
-            regatta = st.text_input("Regata *")
         regatta_date = st.date_input("Data da regata *", value=date.today())
         athlete_name = st.text_input("Nome do atleta *")
-        classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
-        if classes_for_regatta:
-            class_placeholder = "Selecione a classe"
-            class_option = st.selectbox("Classe", [class_placeholder] + classes_for_regatta)
-            sail_class = "" if class_option == class_placeholder else class_option
-        else:
-            sail_class = st.text_input("Classe")
         contact = st.text_input("Contato (e-mail ou telefone) *")
         uploaded_files = st.file_uploader(
             "Arquivos de log *",
@@ -555,7 +579,7 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             type=ACCEPTED_EXTENSIONS,
             help="Formatos aceitos: GPX, CSV, FIT, TCX, NMEA ou ZIP.",
         )
-        submitted = st.form_submit_button("Enviar logs")
+        submitted = st.form_submit_button("Enviar logs", disabled=submit_disabled)
 
     if submitted:
         if not regatta.strip():
