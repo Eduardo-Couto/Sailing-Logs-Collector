@@ -1,29 +1,23 @@
-"""Streamlit application for browsing and managing collected sailing logs.
-
-The previous revision of this file only contained the inner loop responsible for
-rendering each row of the inventory table. Because the surrounding control
-structure was missing, Python raised an ``IndentationError``.  This module now
-provides a full, well-structured Streamlit application that can be executed
-directly with ``streamlit run app.py``.
-
-The app expects two CSV files inside ``STORAGE_ROOT``:
-
-* ``master.csv`` – the authoritative inventory of every imported log.
-* ``index.csv`` – an optional secondary index that mirrors ``master.csv``.
-
-Both CSVs are optional.  When either file is missing, the application simply
-shows an empty state.
-"""
+"""Streamlit application for managing the Sailing Logs Collector storage."""
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
+import re
+import unicodedata
+import zipfile
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Iterable, List, Optional
+from xml.etree import ElementTree as ET
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
 
 
 # ---------------------------------------------------------------------------
@@ -36,26 +30,74 @@ DEFAULT_STORAGE_ROOT = Path("storage").resolve()
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", DEFAULT_STORAGE_ROOT)).resolve()
 MASTER_CSV_NAME = os.getenv("MASTER_CSV_NAME", "master.csv")
 INDEX_CSV_NAME = os.getenv("INDEX_CSV_NAME", "index.csv")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", os.getenv("ADMIN_PASS", "admin"))
+TIMEZONE_NAME = os.getenv("TIMEZONE", "UTC")
 
-# The minimum set of columns the app expects in the inventory.
+try:
+    LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
+except Exception:  # pragma: no cover - invalid timezone definitions are rare
+    LOCAL_TZ = ZoneInfo("UTC")
+    TIMEZONE_WARNING = True
+else:
+    TIMEZONE_WARNING = False
+
+ACCEPTED_EXTENSIONS = ["gpx", "csv", "fit", "tcx", "nmea", "zip"]
+
 INVENTORY_COLUMNS = [
+    "received_at_utc",
+    "log_date",
+    "log_datetime_utc",
+    "log_datetime_source",
+    "regatta",
+    "regatta_date",
+    "athlete_name",
+    "class",
+    "sail_number",
+    "contact",
+    "source_channel",
+    "raw_filename",
     "canonical_filename",
     "drive_path",
     "file_hash_sha256",
+    "file_ext",
+    "src_format_guess",
+    "parse_status",
+    "notes",
 ]
 
 
+def ensure_storage_root() -> None:
+    """Create the storage root if it does not exist."""
+
+    STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
 # ---------------------------------------------------------------------------
-# Helper utilities
+# Utility helpers
 # ---------------------------------------------------------------------------
+
+_slug_pattern = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(value: str, fallback: str = "sem-nome") -> str:
+    """Return a filesystem-friendly slug for ``value``."""
+
+    value = value or ""
+    normalized = unicodedata.normalize("NFKD", value)
+    normalized = normalized.encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower()
+    normalized = _slug_pattern.sub("-", normalized).strip("-")
+    return normalized or fallback
+
+
+def regatta_folder_name(regatta: str, regatta_date: Optional[date]) -> str:
+    """Return the folder name for a regatta."""
+
+    prefix_date = regatta_date.strftime("%Y-%m") if regatta_date else datetime.now(LOCAL_TZ).strftime("%Y-%m")
+    return f"{prefix_date}_{slugify(regatta, fallback='regata')}"
+
 
 def _ensure_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Return ``df`` restricted to :data:`INVENTORY_COLUMNS`.
-
-    Missing columns are added with empty string values so that downstream code
-    can rely on their presence without having to guard every access.
-    """
-
     for column in INVENTORY_COLUMNS:
         if column not in df.columns:
             df[column] = ""
@@ -63,12 +105,7 @@ def _ensure_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_inventory(csv_path: Path) -> pd.DataFrame:
-    """Load the inventory ``csv_path`` as a :class:`~pandas.DataFrame`.
-
-    When the CSV does not exist, an empty dataframe with the expected columns is
-    returned.  Any parsing errors are surfaced to the user via Streamlit and an
-    empty dataframe is returned as a safe fallback.
-    """
+    """Load an inventory CSV and ensure it exposes the expected columns."""
 
     if not csv_path.exists():
         return pd.DataFrame(columns=INVENTORY_COLUMNS)
@@ -82,25 +119,34 @@ def load_inventory(csv_path: Path) -> pd.DataFrame:
     return _ensure_dataframe_columns(df)
 
 
-def remove_row_csv(path: Path, predicate: Callable[[pd.Series], bool]) -> None:
-    """Remove rows from ``path`` that satisfy ``predicate``.
+def append_inventory_row(csv_path: Path, row: dict) -> None:
+    """Append ``row`` to ``csv_path`` ensuring headers are preserved."""
 
-    If the CSV does not exist, the function returns silently.  When the file is
-    present, it is re-written without the rows that match the predicate.
-    """
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    ordered = {column: row.get(column, "") for column in INVENTORY_COLUMNS}
+    df = pd.DataFrame([ordered])
+
+    if csv_path.exists():
+        df.to_csv(csv_path, mode="a", header=False, index=False)
+    else:
+        df.to_csv(csv_path, index=False)
+
+
+def remove_row_csv(path: Path, predicate) -> None:
+    """Remove rows from ``path`` matching ``predicate``."""
 
     if not path.exists():
         return
 
     df = pd.read_csv(path)
+    if df.empty:
+        return
     mask = df.apply(predicate, axis=1)
     df = df.loc[~mask]
     df.to_csv(path, index=False)
 
 
 def resolve_path(raw_path: str) -> Path:
-    """Return an absolute path for ``raw_path`` relative to ``STORAGE_ROOT``."""
-
     raw_path = raw_path or ""
     candidate = Path(raw_path)
     if candidate.is_absolute():
@@ -109,13 +155,98 @@ def resolve_path(raw_path: str) -> Path:
 
 
 def humanize_filename(value: str) -> str:
-    """Return a human-friendly representation for ``value``."""
-
     return value or "(sem nome)"
 
 
+def compute_sha256(data: bytes) -> str:
+    digest = hashlib.sha256()
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def parse_gpx_datetime(data: bytes) -> Optional[datetime]:
+    """Extract the first ``<time>`` entry from a GPX file."""
+
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return None
+
+    # ``time`` tags may appear in multiple namespaces.
+    for elem in root.iter():
+        if elem.tag.endswith("time") and elem.text:
+            try:
+                parsed = datetime.fromisoformat(elem.text.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            return parsed.astimezone(timezone.utc)
+    return None
+
+
+def detect_log_datetime(extension: str, data: bytes, submitted_date: Optional[date]) -> tuple[Optional[datetime], str]:
+    """Return ``(datetime_utc, source)`` for the uploaded ``data``."""
+
+    extension = (extension or "").lstrip(".").lower()
+    if extension == "gpx":
+        dt = parse_gpx_datetime(data)
+        if dt:
+            return dt, "file"
+
+    if submitted_date:
+        dt = datetime.combine(submitted_date, datetime.min.time(), tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+        return dt, "form"
+
+    return datetime.now(timezone.utc), "upload"
+
+
+def ensure_regatta_directories(base: Path) -> None:
+    for name in ["_INBOX", "_NORMALIZED", "_REPORTS"]:
+        (base / name).mkdir(parents=True, exist_ok=True)
+
+
+def _append_to_inbox(inbox_dir: Path, original_name: str, data: bytes) -> None:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_name = f"{timestamp}_{original_name}"
+    inbox_path = inbox_dir / safe_name
+    with inbox_path.open("wb") as stream:
+        stream.write(data)
+
+
+def store_log_file(regatta_dir: Path, log_date: date, athlete_slug: str, canonical_name: str, data: bytes) -> Path:
+    normalized_dir = regatta_dir / "_NORMALIZED" / log_date.strftime("%Y-%m-%d") / "@Atletas" / athlete_slug
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+    destination = normalized_dir / canonical_name
+    with destination.open("wb") as stream:
+        stream.write(data)
+    return destination
+
+
+def build_zip(rows: pd.DataFrame) -> Optional[bytes]:
+    """Return a zip archive containing the files referenced in ``rows``."""
+
+    files_added = False
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for _, row in rows.iterrows():
+            drive_path = row.get("drive_path", "")
+            if not drive_path:
+                continue
+            file_path = resolve_path(str(drive_path))
+            if not file_path.exists():
+                continue
+            arcname = Path(drive_path).as_posix()
+            archive.write(file_path, arcname=arcname)
+            files_added = True
+
+    if not files_added:
+        return None
+
+    buffer.seek(0)
+    return buffer.read()
+
+
 # ---------------------------------------------------------------------------
-# Streamlit UI
+# Streamlit UI helpers
 # ---------------------------------------------------------------------------
 
 def render_inventory(df_view: pd.DataFrame, index_csv_path: Path) -> None:
@@ -131,10 +262,21 @@ def render_inventory(df_view: pd.DataFrame, index_csv_path: Path) -> None:
         display_name = humanize_filename(row.get("canonical_filename", ""))
         drive_path = str(row.get("drive_path", ""))
         file_hash = str(row.get("file_hash_sha256", ""))
+        log_date = row.get("log_date", "")
 
         with col1:
             st.write(f"**{display_name}**")
-            st.caption(drive_path or "(caminho não informado)")
+            st.caption(
+                "\n".join(
+                    filter(
+                        None,
+                        [
+                            drive_path or "(caminho não informado)",
+                            f"Data do log: {log_date}" if log_date else "",
+                        ],
+                    )
+                )
+            )
 
         with col2:
             try:
@@ -159,8 +301,6 @@ def render_inventory(df_view: pd.DataFrame, index_csv_path: Path) -> None:
                     if file_abs.exists():
                         file_abs.unlink()
 
-                    # Attempt to clean empty parent directories up to three
-                    # levels above the deleted file.
                     parent = file_abs.parent
                     for _ in range(3):
                         if (
@@ -193,21 +333,282 @@ def render_inventory(df_view: pd.DataFrame, index_csv_path: Path) -> None:
             st.code(file_hash[:8] if file_hash else "—", language=None)
 
 
-def main() -> None:
-    """Entry point for ``streamlit run app.py``."""
+# ---------------------------------------------------------------------------
+# Collector workflow
+# ---------------------------------------------------------------------------
 
-    st.set_page_config(page_title="Sailing Logs Collector", layout="wide")
-    st.title("Inventário de logs importados")
+@dataclass
+class UploadResult:
+    filename: str
+    file_hash: str
+    log_date: date
+    message: str
+    success: bool
+
+
+def process_uploads(
+    *,
+    regatta: str,
+    regatta_date: date,
+    athlete_name: str,
+    sail_class: str,
+    sail_number: str,
+    contact: str,
+    files: Iterable[st.runtime.uploaded_file_manager.UploadedFile],
+    master_df: pd.DataFrame,
+) -> List[UploadResult]:
+    results: List[UploadResult] = []
+
+    existing_hashes = set(str(value) for value in master_df["file_hash_sha256"].dropna())
+    regatta_dir = STORAGE_ROOT / regatta_folder_name(regatta, regatta_date)
+    ensure_regatta_directories(regatta_dir)
 
     master_csv_path = STORAGE_ROOT / MASTER_CSV_NAME
-    index_csv_path = STORAGE_ROOT / INDEX_CSV_NAME
+    index_csv_path = regatta_dir / INDEX_CSV_NAME
 
-    df_master = load_inventory(master_csv_path)
-    df_view = df_master.sort_values("canonical_filename")
+    athlete_slug = slugify(athlete_name)
 
-    render_inventory(df_view, index_csv_path)
+    for uploaded in files:
+        raw_name = uploaded.name
+        data = uploaded.read()
+        file_hash = compute_sha256(data)
+
+        if file_hash in existing_hashes:
+            results.append(
+                UploadResult(
+                    filename=raw_name,
+                    file_hash=file_hash,
+                    log_date=regatta_date,
+                    message="Arquivo já existe no inventário (deduplicado).",
+                    success=False,
+                )
+            )
+            continue
+
+        extension = Path(raw_name).suffix.lower().lstrip(".")
+        log_dt, source = detect_log_datetime(extension, data, regatta_date)
+        log_dt_local = log_dt.astimezone(LOCAL_TZ) if log_dt else datetime.now(LOCAL_TZ)
+        log_date = log_dt_local.date()
+        canonical_name = f"{log_date.strftime('%Y-%m-%d')}_{athlete_slug}_{file_hash[:8]}"
+        if extension:
+            canonical_name += f".{extension}"
+
+        _append_to_inbox(regatta_dir / "_INBOX", raw_name, data)
+        destination = store_log_file(regatta_dir, log_date, athlete_slug, canonical_name, data)
+
+        drive_path = destination.relative_to(STORAGE_ROOT).as_posix()
+        received_at = datetime.now(timezone.utc)
+
+        row = {
+            "received_at_utc": received_at.isoformat(),
+            "log_date": log_date.isoformat(),
+            "log_datetime_utc": log_dt.isoformat() if log_dt else "",
+            "log_datetime_source": source,
+            "regatta": regatta,
+            "regatta_date": regatta_date.isoformat() if regatta_date else "",
+            "athlete_name": athlete_name,
+            "class": sail_class,
+            "sail_number": sail_number,
+            "contact": contact,
+            "source_channel": "web",
+            "raw_filename": raw_name,
+            "canonical_filename": canonical_name,
+            "drive_path": drive_path,
+            "file_hash_sha256": file_hash,
+            "file_ext": extension,
+            "src_format_guess": extension,
+            "parse_status": "pending",
+            "notes": "",
+        }
+
+        append_inventory_row(master_csv_path, row)
+        append_inventory_row(index_csv_path, row)
+        existing_hashes.add(file_hash)
+
+        results.append(
+            UploadResult(
+                filename=canonical_name,
+                file_hash=file_hash,
+                log_date=log_date,
+                message="Upload processado com sucesso.",
+                success=True,
+            )
+        )
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Main application
+# ---------------------------------------------------------------------------
+
+def collector_tab(master_df: pd.DataFrame) -> None:
+    st.subheader("Coletor de logs")
+    st.write(
+        "Envie seus arquivos de rastreamento para que possamos organizar o inventário da regata."
+    )
+
+    with st.form("collector_form"):
+        regatta = st.text_input("Regata *")
+        regatta_date = st.date_input("Data da regata *", value=date.today())
+        athlete_name = st.text_input("Nome do atleta *")
+        sail_class = st.text_input("Classe")
+        sail_number = st.text_input("Número da vela")
+        contact = st.text_input("Contato (e-mail ou telefone) *")
+        uploaded_files = st.file_uploader(
+            "Arquivos de log *",
+            accept_multiple_files=True,
+            type=ACCEPTED_EXTENSIONS,
+            help="Formatos aceitos: GPX, CSV, FIT, TCX, NMEA ou ZIP.",
+        )
+        submitted = st.form_submit_button("Enviar logs")
+
+    if submitted:
+        if not regatta.strip():
+            st.error("Informe a regata.")
+            return
+        if not athlete_name.strip():
+            st.error("Informe o nome do atleta.")
+            return
+        if not contact.strip():
+            st.error("Informe um contato para confirmação.")
+            return
+        if not uploaded_files:
+            st.error("Envie pelo menos um arquivo de log.")
+            return
+
+        results = process_uploads(
+            regatta=regatta,
+            regatta_date=regatta_date,
+            athlete_name=athlete_name,
+            sail_class=sail_class,
+            sail_number=sail_number,
+            contact=contact,
+            files=uploaded_files,
+            master_df=master_df,
+        )
+
+        success = [result for result in results if result.success]
+        duplicates = [result for result in results if not result.success]
+
+        if success:
+            st.success("Uploads concluídos!")
+            for result in success:
+                st.write(
+                    f"• **{result.filename}** – protocolo `{result.file_hash[:8]}` – data {result.log_date.isoformat()}"
+                )
+
+        if duplicates:
+            st.warning("Alguns arquivos foram ignorados por já existirem no inventário:")
+            for result in duplicates:
+                st.write(
+                    f"• {result.filename} – hash `{result.file_hash[:8]}`"
+                )
+
+
+def admin_tab() -> None:
+    st.subheader("Administração")
+
+    if "admin_authenticated" not in st.session_state:
+        st.session_state["admin_authenticated"] = False
+
+    if not st.session_state["admin_authenticated"]:
+        with st.form("admin_login"):
+            password = st.text_input("Senha", type="password")
+            submitted = st.form_submit_button("Entrar")
+        if submitted:
+            if password == ADMIN_PASSWORD:
+                st.session_state["admin_authenticated"] = True
+                st.experimental_rerun()
+            else:
+                st.error("Senha incorreta.")
+        return
+
+    st.info("Use o seletor abaixo para visualizar as regatas disponíveis.")
+
+    regatta_dirs = [
+        path
+        for path in STORAGE_ROOT.iterdir()
+        if path.is_dir() and path.name not in {".streamlit"}
+    ] if STORAGE_ROOT.exists() else []
+
+    if not regatta_dirs:
+        st.warning("Nenhuma regata encontrada no armazenamento.")
+        if st.button("Sair"):
+            st.session_state["admin_authenticated"] = False
+            st.experimental_rerun()
+        return
+
+    regatta_dirs.sort(key=lambda p: p.name)
+    regatta_options = {path.name: path for path in regatta_dirs}
+    selected_label = st.selectbox("Regata", list(regatta_options.keys()))
+    regatta_dir = regatta_options[selected_label]
+    index_csv_path = regatta_dir / INDEX_CSV_NAME
+    df_regatta = load_inventory(index_csv_path)
+
+    if df_regatta.empty:
+        st.info("Nenhum arquivo disponível para esta regata.")
+    else:
+        dates = sorted(value for value in df_regatta["log_date"].dropna().unique())
+        date_options = ["Todos"] + dates
+        selected_date = st.selectbox("Filtrar por data", date_options, format_func=lambda x: x)
+
+        if selected_date != "Todos":
+            df_view = df_regatta[df_regatta["log_date"] == selected_date]
+        else:
+            df_view = df_regatta
+
+        st.markdown("### Inventário")
+        st.dataframe(df_view)
+
+        if selected_date != "Todos":
+            zip_bytes = build_zip(df_view)
+            st.download_button(
+                "Baixar ZIP do dia",
+                data=zip_bytes,
+                file_name=f"{regatta_dir.name}_{selected_date}.zip",
+                mime="application/zip",
+                disabled=zip_bytes is None,
+            )
+        zip_all = build_zip(df_regatta)
+        st.download_button(
+            "Baixar ZIP completo da regata",
+            data=zip_all,
+            file_name=f"{regatta_dir.name}.zip",
+            mime="application/zip",
+            disabled=zip_all is None,
+        )
+
+        st.markdown("### Ações por arquivo")
+        render_inventory(df_view, index_csv_path)
+
+    if st.button("Sair"):
+        st.session_state["admin_authenticated"] = False
+        st.experimental_rerun()
+
+
+def main() -> None:
+    st.set_page_config(page_title="Sailing Logs Collector", layout="wide")
+    ensure_storage_root()
+
+    if TIMEZONE_WARNING:
+        st.warning(
+            "Fuso horário configurado não pôde ser carregado. Utilizando UTC como padrão."
+        )
+
+    st.title("Sailing Logs Collector")
+
+    master_csv_path = STORAGE_ROOT / MASTER_CSV_NAME
+    master_df = load_inventory(master_csv_path)
+
+    tab_collector, tab_admin = st.tabs(["Coletor", "Admin"])
+
+    with tab_collector:
+        collector_tab(master_df)
+
+    with tab_admin:
+        admin_tab()
 
 
 if __name__ == "__main__":
     main()
-
