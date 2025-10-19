@@ -550,12 +550,11 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         previous_regatta = st.session_state.get(regatta_state_key)
         if regatta != previous_regatta:
             st.session_state.pop(class_key, None)
-        st.selectbox(
+        selected_option = st.selectbox(
             "Classe *",
             [class_placeholder] + classes_for_regatta,
             key=class_key,
         )
-        selected_option = st.session_state.get(class_key, "")
         if selected_option == class_placeholder or selected_option not in classes_for_regatta:
             sail_class = ""
         else:
@@ -570,6 +569,10 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         st.session_state.pop(class_key, None)
         st.session_state.pop("collector_class_text", None)
         st.session_state.pop(regatta_state_key, None)
+
+    submit_disabled = (not regatta.strip()) or (
+        classes_for_regatta and not sail_class.strip()
+    )
 
     submit_disabled = (not regatta.strip()) or (
         classes_for_regatta and not sail_class.strip()
