@@ -536,12 +536,14 @@ def collector_tab(master_df: pd.DataFrame) -> None:
         )
         regatta = "" if regatta_option == placeholder else regatta_option
 
+    classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
+    sail_class = ""
     with st.form("collector_form"):
         if not regatta_names:
             regatta = st.text_input("Regata *")
+            classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
         regatta_date = st.date_input("Data da regata *", value=date.today())
         athlete_name = st.text_input("Nome do atleta *")
-        classes_for_regatta = regatta_config.get(regatta, []) if regatta else []
         if classes_for_regatta:
             class_placeholder = "Selecione a classe"
             class_option = st.selectbox("Classe", [class_placeholder] + classes_for_regatta)
@@ -555,7 +557,8 @@ def collector_tab(master_df: pd.DataFrame) -> None:
             type=ACCEPTED_EXTENSIONS,
             help="Formatos aceitos: GPX, CSV, FIT, TCX, NMEA ou ZIP.",
         )
-        submitted = st.form_submit_button("Enviar logs")
+        submit_disabled = (not regatta.strip()) or (classes_for_regatta and not sail_class)
+        submitted = st.form_submit_button("Enviar logs", disabled=submit_disabled)
 
     if submitted:
         if not regatta.strip():
